@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@import "@fontsource-variable/outfit";
+
+@theme {
+  --font-sans: "Outfit Variable", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* ink 色引用运行时 CSS 变量，支持深浅主题切换 */
+  --color-ink-950: var(--ink-950);
+  --color-ink-900: var(--ink-900);
+  --color-ink-850: var(--ink-850);
+  --color-ink-800: var(--ink-800);
+  --color-ink-700: var(--ink-700);
+  --color-ink-600: var(--ink-600);
+  --color-ink-500: var(--ink-500);
+  --color-ink-400: var(--ink-400);
+  --color-ink-300: var(--ink-300);
+  --color-ink-100: var(--ink-100);
+
+  --color-accent-600: var(--accent-600);
+  --color-accent-500: var(--accent-500);
+  --color-accent-400: var(--accent-400);
+  --color-accent-300: var(--accent-300);
+  --color-accent-950: var(--accent-950);
+}
+
+/* 默认深色主题（蓝黑基调） */
+:root {
+  --ink-950: #0b1220;
+  --ink-900: #101a2b;
+  --ink-850: #152238;
+  --ink-800: #1d2b45;
+  --ink-700: #2f4063;
+  --ink-600: #4a5d83;
+  --ink-500: #7e8fa9;
+  --ink-400: #a2b2c9;
+  --ink-300: #c3cede;
+  --ink-100: #eef2fa;
+
+  --accent-600: #d97706;
+  --accent-500: #f59e0b;
+  --accent-400: #fbbf24;
+  --accent-300: #fcd34d;
+  --accent-950: #451a03;
+}
+
+/* 浅色主题 */
+[data-theme="light"] {
+  --ink-950: #f3f5f9;
+  --ink-900: #ffffff;
+  --ink-850: #eef1f6;
+  --ink-800: #e1e6ef;
+  --ink-700: #c5cddb;
+  --ink-600: #94a3b8;
+  --ink-500: #64748b;
+  --ink-400: #475569;
+  --ink-300: #334155;
+  --ink-100: #0f172a;
+
+  --accent-600: #b45309;
+  --accent-500: #d97706;
+  --accent-400: #f59e0b;
+  --accent-300: #fbbf24;
+  --accent-950: #fff7ed;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(1100px 520px at 12% -8%, rgba(56, 189, 248, 0.08), transparent 62%),
+    radial-gradient(900px 480px at 108% 108%, rgba(245, 158, 11, 0.06), transparent 60%),
+    var(--ink-950);
+  background-attachment: fixed;
+  color: var(--ink-100);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s ease;
+}
+
+[data-theme="light"] body {
+  background:
+    radial-gradient(1100px 520px at 12% -8%, rgba(56, 189, 248, 0.05), transparent 62%),
+    radial-gradient(900px 480px at 108% 108%, rgba(245, 158, 11, 0.05), transparent 60%),
+    var(--ink-950);
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--ink-700);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-600);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent-500) 30%, transparent);
+}
+
+/* 悬浮岛玻璃 */
+.island-glass {
+  background: color-mix(in srgb, var(--ink-850) 86%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--ink-700);
+  box-shadow:
+    0 20px 44px -12px rgb(0 0 0 / 0.35),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
