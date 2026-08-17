@@ -11,15 +11,15 @@ const router = Router();
 // 数据集列表（含统计）
 router.get("/", async (_req, res) => {
   try {
-    const datasets = await DatasetModel.find().sort({ createdAt: -1 }).lean();
+    const datasets = await DatasetModel.findAll({ order: [["createdAt", "DESC"]] });
     const rows = await Promise.all(
       datasets.map(async (d) => {
         const [cnt, analyzed] = await Promise.all([
-          CommentModel.countDocuments({ datasetId: d._id }),
-          CommentModel.countDocuments({ datasetId: d._id, analyzed: true }),
+          CommentModel.count({ where: { datasetId: d.id } }),
+          CommentModel.count({ where: { datasetId: d.id, analyzed: true } }),
         ]);
         return {
-          id: d._id,
+          id: d.id,
           name: d.name,
           platform: d.platform,
           type: d.type,
@@ -45,14 +45,14 @@ router.get("/", async (_req, res) => {
 // 数据集详情
 router.get("/:id", async (req, res) => {
   try {
-    const d = await DatasetModel.findById(req.params.id).lean();
+    const d = await DatasetModel.findByPk(req.params.id);
     if (!d) return res.status(404).json({ error: "数据集不存在" });
     const [commentCount, analyzedCount] = await Promise.all([
-      CommentModel.countDocuments({ datasetId: d._id }),
-      CommentModel.countDocuments({ datasetId: d._id, analyzed: true }),
+      CommentModel.count({ where: { datasetId: d.id } }),
+      CommentModel.count({ where: { datasetId: d.id, analyzed: true } }),
     ]);
     res.json({
-      id: d._id,
+      id: d.id,
       name: d.name,
       platform: d.platform,
       type: d.type,
@@ -80,9 +80,9 @@ router.post("/", async (req, res) => {
         scenarioId,
       });
       const generated = generateScenarioComments(def);
-      await CommentModel.insertMany(
+      await CommentModel.bulkCreate(
         generated.map((g) => ({
-          datasetId: dataset._id,
+          datasetId: dataset.id,
           content: g.content,
           author: g.author,
           platform: g.platform,
@@ -94,7 +94,7 @@ router.post("/", async (req, res) => {
           analyzed: true, // 内置场景已预标注，无 key 也能完整演示
         }))
       );
-      return res.status(201).json({ id: dataset._id, count: generated.length });
+      return res.status(201).json({ id: dataset.id, count: generated.length });
     }
 
     if (Array.isArray(comments) && comments.length > 0) {
@@ -118,10 +118,10 @@ router.post("/", async (req, res) => {
         .map((c) => {
           const doc = normalizeComment(c as never, { platform: platform || "导入来源", now, index: i });
           i++;
-          return { datasetId: dataset._id, ...doc };
+          return { datasetId: dataset.id, ...doc };
         });
-      await CommentModel.insertMany(docs);
-      return res.status(201).json({ id: dataset._id, count: docs.length, deduped: comments.length - docs.length });
+      await CommentModel.bulkCreate(docs);
+      return res.status(201).json({ id: dataset.id, count: docs.length, deduped: comments.length - docs.length });
     }
 
     // URL 定时抓取数据集
@@ -139,8 +139,8 @@ router.post("/", async (req, res) => {
         feedIntervalMin: Math.max(1, Number(feedIntervalMin ?? 5)),
         feedRunning: true,
       });
-      await startFeed(String(dataset._id)); // 立即抓一次 + 定时
-      return res.status(201).json({ id: dataset._id, count: 0, feed: true });
+      await startFeed(dataset.id); // 立即抓一次 + 定时
+      return res.status(201).json({ id: dataset.id, count: 0, feed: true });
     }
 
     res.status(400).json({ error: "需要 scenarioId / comments 数组 / feedUrl" });
@@ -152,15 +152,16 @@ router.post("/", async (req, res) => {
 // 删除数据集（级联清理）
 router.delete("/:id", async (req, res) => {
   try {
-    const d = await DatasetModel.findByIdAndDelete(req.params.id);
+    const d = await DatasetModel.findByPk(req.params.id);
     if (!d) return res.status(404).json({ error: "数据集不存在" });
-    stopFeed(String(d._id));
-    await cancelJobsForDataset(String(d._id)); // 取消运行中的分析任务，防止旧 worker 继续写已删除数据
+    stopFeed(d.id);
+    await cancelJobsForDataset(d.id); // 取消运行中的分析任务，防止旧 worker 继续写已删除数据
     await Promise.all([
-      CommentModel.deleteMany({ datasetId: d._id }),
-      AnalysisJobModel.deleteMany({ datasetId: d._id }),
-      AlertModel.deleteMany({ datasetId: d._id }),
-      AlertRuleModel.deleteMany({ datasetId: d._id }),
+      CommentModel.destroy({ where: { datasetId: d.id } }),
+      AnalysisJobModel.destroy({ where: { datasetId: d.id } }),
+      AlertModel.destroy({ where: { datasetId: d.id } }),
+      AlertRuleModel.destroy({ where: { datasetId: d.id } }),
+      DatasetModel.destroy({ where: { id: d.id } }),
     ]);
     res.json({ ok: true });
   } catch (e) {

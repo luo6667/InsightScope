@@ -8,9 +8,9 @@
 | 层 | 技术 |
 |---|---|
 | 前端 | Vite · React 19 · TypeScript · Tailwind CSS 4 · **react-router** · **axios** · Zustand · TanStack Query · **ECharts**（含词云）· socket.io-client |
-| 后端 | Express · Mongoose (MongoDB) · **socket.io** · axios（AI 调用） |
+| 后端 | Express · Sequelize (MySQL) · **socket.io** · axios（AI 调用） |
 | AI | OpenAI 兼容 `/chat/completions`（OpenAI / DeepSeek 均可），自插 key |
-| 算法 | 滑动窗口 Z-score 异常检测 · MongoDB 聚合管道 |
+| 算法 | 滑动窗口 Z-score 异常检测 · 应用层多维统计（情感/主题/趋势） |
 
 ## 功能
 
@@ -25,7 +25,7 @@
 ## 快速开始
 
 ```powershell
-# 依赖：Node 18+、本机 MongoDB（默认 root/1234@127.0.0.1:27017，库名 insight）
+# 依赖：Node 18+、本机 MySQL（默认 root/1234@127.0.0.1:3306，库名 plfx，启动时自动建库建表）
 
 # 1. 后端（http://localhost:5176）
 cd insight/server
@@ -38,7 +38,7 @@ npm install
 npm run dev
 ```
 
-其他 MongoDB 实例用环境变量覆盖：`$env:MONGO_URI = "mongodb://.../insight"`。
+其他 MySQL 实例用环境变量覆盖：`MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE`（如 `$env:MYSQL_PASSWORD = "..."`）。
 
 ## 生产部署
 
@@ -55,7 +55,10 @@ npm run build        # tsc 编译到 dist/
 
 # 3. 启动（生产模式）
 $env:NODE_ENV = "production"
-$env:MONGO_URI = "mongodb://user:password@127.0.0.1:27017/insight"
+$env:MYSQL_HOST = "127.0.0.1"
+$env:MYSQL_USER = "root"
+$env:MYSQL_PASSWORD = "1234"
+$env:MYSQL_DATABASE = "plfx"
 npm start            # node dist/index.js，访问 http://服务器IP:5176 即前端页面
 ```
 
@@ -63,7 +66,7 @@ npm start            # node dist/index.js，访问 http://服务器IP:5176 即�
 
 | 变量 | 说明 | 生产建议 |
 |---|---|---|
-| `MONGO_URI` | MongoDB 连接串 | **必填**，勿用默认密码 |
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | MySQL 连接（默认 root/1234@127.0.0.1:3306/plfx） | **必填**，勿用默认密码 |
 | `CORS_ORIGIN` | 允许的跨域域名（逗号分隔） | 填实际访问域名，勿留默认 |
 | `RATE_LIMIT_PER_MIN` | 写接口限流（次/分钟/IP，0=关） | 建议 60 |
 | `ENABLE_MOCK_AI` | 测试用 Mock AI 开关 | 建议 `false` |
@@ -98,7 +101,7 @@ insight/
 │   ├── models.ts              # Dataset/Comment/AnalysisJob/Alert/AlertRule
 │   ├── routes/                # datasets/comments/analysis/alerts/simulate
 │   ├── services/              # scenarioService（3 场景生成器）/ anomalyService（Z-score）
-│   └── index.ts               # Express + socket.io + MongoDB
+│   └── index.ts               # Express + socket.io + MySQL（Sequelize）
 └── web/src/
     ├── pages/                 # 数据集/导入/监控台/分析/报告/告警中心/设置
     ├── components/            # EChart 封装
@@ -116,8 +119,8 @@ node scripts/sim-test.mjs   # 实时监控链路：socket 评论流 + 告警触�
 
 ## 简历写法（示例）
 
-> **舆情雷达：AI 评论分析与舆情监控平台** | React 19 + TypeScript + Express + MongoDB + socket.io
+> **舆情雷达：AI 评论分析与舆情监控平台** | React 19 + TypeScript + Express + MySQL（Sequelize）+ socket.io
 > - 设计"导入 → AI 批量分析 → 可视化监控 → 告警 → 报告"完整管线，内置 3 套舆情场景（1300+ 条）免 key 演示
 > - 实现后端分析任务队列：并发限流、断点续跑、失败重试，进度经 WebSocket 实时推送
-> - 基于 MongoDB 聚合管道多维统计（情感/主题/关键词/时间趋势），ECharts 四图联动展示
+> - 实现多维统计（情感/主题/关键词/时间趋势），ECharts 四图联动展示
 > - 实现滑动窗口 Z-score 负面率异常检测与规则化告警（阈值/关键词/量突增），实时推送与冷却去抖

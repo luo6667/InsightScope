@@ -4,7 +4,8 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
-import mongoose from "mongoose";
+import { Op } from "sequelize";
+import { initDb, sequelize, dbUriSummary } from "./db.js";
 import { HttpError } from "./utils/httpUtils.js";
 import datasetsRouter from "./routes/datasets.js";
 import commentsRouter from "./routes/comments.js";
@@ -16,8 +17,6 @@ import { DatasetModel } from "./models.js";
 import { listScenarios } from "./services/scenarioService.js";
 
 const PORT = Number(process.env.PORT ?? 5176);
-const MONGO_URI =
-  process.env.MONGO_URI ?? "mongodb://root:1234@127.0.0.1:27017/insight?authSource=admin";
 // CORS 白名单：逗号分隔；默认允许本地 dev 前后端
 const CORS_ORIGINS = (process.env.CORS_ORIGIN ?? "http://localhost:5175,http://localhost:5176")
   .split(",")
@@ -31,8 +30,8 @@ const ENABLE_MOCK_AI = process.env.ENABLE_MOCK_AI !== "false";
 const WEB_DIST =
   process.env.WEB_DIST ?? fileURLToPath(new URL("../../web/dist", import.meta.url));
 
-if (!process.env.MONGO_URI) {
-  console.warn("[config] 未设置 MONGO_URI，使用默认本地地址（root:1234@127.0.0.1:27017/insight）。生产环境请通过环境变量配置！");
+if (!process.env.MYSQL_HOST && !process.env.MYSQL_USER && !process.env.MYSQL_PASSWORD) {
+  console.warn("[config] 未设置 MYSQL_* 环境变量，使用默认本地 MySQL（root:1234@127.0.0.1:3306/plfx）。生产环境请通过环境变量配置！");
 }
 if (RATE_LIMIT_PER_MIN > 0) {
   console.log(`[config] 写接口限流已开启：${RATE_LIMIT_PER_MIN} 次/分钟/IP`);
@@ -90,7 +89,7 @@ io.on("connection", (socket) => {
   socket.on("join-dataset", async (datasetId: string) => {
     // 校验数据集存在，防止订阅任意 id
     try {
-      const ok = await DatasetModel.exists({ _id: datasetId });
+      const ok = await DatasetModel.findByPk(datasetId);
       if (!ok) return socket.emit("join-error", { datasetId, error: "数据集不存在" });
       socket.join(`dataset:${datasetId}`);
     } catch {
@@ -169,17 +168,16 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 async function main() {
   try {
-    await mongoose.connect(MONGO_URI);
-    console.log(`[mongodb] connected: ${MONGO_URI.replace(/\/\/[^@]*@/, "//***@")}`);
+    await initDb();
+    console.log(`[mysql] connected: ${dbUriSummary()}`);
   } catch (e) {
-    console.error("[mongodb] 连接失败（需本机 MongoDB 运行，默认 root/1234）", e);
+    console.error("[mysql] 连接失败（需本机 MySQL 运行，默认 root:1234@127.0.0.1:3306/plfx）", e);
     process.exit(1);
   }
 
   // 运行期连接事件监听：断连/重连有日志，DB 抖动不静默
-  mongoose.connection.on("error", (err) => console.error("[mongodb] error:", err));
-  mongoose.connection.on("disconnected", () => console.warn("[mongodb] disconnected"));
-  mongoose.connection.on("reconnected", () => console.log("[mongodb] reconnected"));
+  sequelize.addHook("afterConnect", () => console.log("[mysql] connection established"));
+  sequelize.addHook("beforeDisconnect", () => console.warn("[mysql] disconnected"));
 
   httpServer.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
@@ -195,9 +193,11 @@ async function main() {
 
   // 恢复 server 重启前的定时抓取任务
   try {
-    const feedDatasets = await DatasetModel.find({ feedUrl: { $ne: "" }, feedRunning: true }).lean();
+    const feedDatasets = await DatasetModel.findAll({
+      where: { feedUrl: { [Op.ne]: "" }, feedRunning: true },
+    });
     for (const d of feedDatasets) {
-      void startFeed(String(d._id)).catch((e) => {
+      void startFeed(d.id).catch((e) => {
         console.error(`[feed] restore failed: ${d.name}`, e instanceof Error ? e.message : e);
       });
       console.log(`[feed] restored: ${d.name}`);

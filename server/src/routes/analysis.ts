@@ -1,5 +1,6 @@
 import { Router } from "express";
 import axios from "axios";
+import { Op } from "sequelize";
 import { AnalysisJobModel, CommentModel } from "../models.js";
 import { io } from "../index.js";
 import { HttpError } from "../utils/httpUtils.js";
@@ -108,18 +109,16 @@ function emit(datasetId: string, event: string, payload: unknown) {
   io.to(`dataset:${datasetId}`).emit(event, payload);
 }
 
-async function writeResult(id: unknown, result: { sentiment: Sentiment; sentimentScore: number; topics: string[]; keywords: string[] }) {
-  await CommentModel.updateOne(
-    { _id: id },
+async function writeResult(id: string, result: { sentiment: Sentiment; sentimentScore: number; topics: string[]; keywords: string[] }) {
+  await CommentModel.update(
     {
-      $set: {
-        sentiment: result.sentiment,
-        sentimentScore: result.sentimentScore,
-        topics: result.topics,
-        keywords: result.keywords,
-        analyzed: true,
-      },
-    }
+      sentiment: result.sentiment,
+      sentimentScore: result.sentimentScore,
+      topics: result.topics,
+      keywords: result.keywords,
+      analyzed: true,
+    },
+    { where: { id } }
   );
 }
 
@@ -127,12 +126,12 @@ async function runJob(jobId: string) {
   if (runningJobs.has(jobId)) return; // 已在运行，防重复启动
   runningJobs.add(jobId);
   try {
-    const job = await AnalysisJobModel.findById(jobId);
+    const job = await AnalysisJobModel.findByPk(jobId);
     if (!job) return;
     const cfg = jobConfigs.get(jobId);
     if (!cfg) {
       // AI 配置在内存中丢失（如进程重启后 resume）：回滚为 paused，避免永久卡死 running
-      await AnalysisJobModel.updateOne({ _id: jobId }, { status: "paused" }).catch(() => {});
+      await AnalysisJobModel.update({ status: "paused" }, { where: { id: jobId } }).catch(() => {});
       emit(String(job.datasetId), "analysis:error", {
         jobId,
         error: "AI 配置已丢失，请取消任务后重新发起分析",
@@ -141,9 +140,11 @@ async function runJob(jobId: string) {
     }
 
     // 断点续跑：只处理未分析评论
-    const ids = await CommentModel.find({ datasetId: job.datasetId, analyzed: false })
-      .select("_id content")
-      .lean();
+    const ids = await CommentModel.findAll({
+      where: { datasetId: job.datasetId, analyzed: false },
+      attributes: ["id", "content"],
+      raw: true,
+    });
     job.total = ids.length + job.processed;
     job.status = "running";
     await job.save();
@@ -174,7 +175,7 @@ async function runJob(jobId: string) {
                 const r = results[i];
                 if (cancelFlags.has(jobId)) return; // 已取消/重置，丢弃本批结果
                 if (r) {
-                  void writeResult(batch[i]._id, r).catch((e) => {
+                  void writeResult(batch[i].id, r).catch((e) => {
                     console.error("[analysis] writeResult failed", e instanceof Error ? e.message : e);
                   });
                   processed++;
@@ -198,7 +199,7 @@ async function runJob(jobId: string) {
           }
           try {
             const result = await analyzeOne(cfg, item.content);
-            await writeResult(item._id, result);
+            await writeResult(item.id, result);
             processed++;
           } catch {
             failed++;
@@ -208,7 +209,7 @@ async function runJob(jobId: string) {
         // 每批完成即保存并推送进度（细粒度，前端进度条实时动，不会"看起来卡住"）
         job.processed = processed;
         job.failed = failed;
-        await AnalysisJobModel.updateOne({ _id: jobId }, { processed, failed });
+        await AnalysisJobModel.update({ processed, failed }, { where: { id: jobId } });
         emit(String(job.datasetId), "analysis:progress", {
           jobId,
           status: "running",
@@ -222,7 +223,7 @@ async function runJob(jobId: string) {
     await Promise.all(Array.from({ length: concurrency }, worker));
 
     const finalStatus = cancelFlags.has(jobId) ? "failed" : "done";
-    await AnalysisJobModel.updateOne({ _id: jobId }, { status: finalStatus, processed, failed });
+    await AnalysisJobModel.update({ status: finalStatus, processed, failed }, { where: { id: jobId } });
     emit(String(job.datasetId), "analysis:progress", {
       jobId,
       status: finalStatus,
@@ -233,7 +234,7 @@ async function runJob(jobId: string) {
   } catch (e) {
     // 兜底：任务异常不崩进程，置失败
     console.error("[analysis] job crashed", jobId, e instanceof Error ? e.message : e);
-    await AnalysisJobModel.updateOne({ _id: jobId }, { status: "failed" }).catch(() => {});
+    await AnalysisJobModel.update({ status: "failed" }, { where: { id: jobId } }).catch(() => {});
   } finally {
     cancelFlags.delete(jobId);
     pauseFlags.delete(jobId);
@@ -252,8 +253,7 @@ router.post("/:datasetId/analysis", async (req, res) => {
     // SSRF 防护：baseUrl 必须是公网 http/https，不允许内网地址
     const safeBase = assertPublicHttpUrl(baseUrl, "baseUrl");
     const existing = await AnalysisJobModel.findOne({
-      datasetId: req.params.datasetId,
-      status: { $in: ["pending", "running"] },
+      where: { datasetId: req.params.datasetId, status: { [Op.in]: ["pending", "running"] } },
     });
     if (existing) return res.json({ job: existing });
 
@@ -262,13 +262,13 @@ router.post("/:datasetId/analysis", async (req, res) => {
       status: "pending",
       concurrency: Number(concurrency ?? 6),
     });
-    jobConfigs.set(String(job._id), {
+    jobConfigs.set(job.id, {
       apiKey: String(apiKey).trim(),
       baseUrl: safeBase,
       model: String(model).trim(),
       temperature: Number(temperature ?? 0.2),
     });
-    void runJob(String(job._id)).catch((e) => {
+    void runJob(job.id).catch((e) => {
       console.error("[analysis] runJob crashed", e instanceof Error ? e.message : e);
     });
     res.status(201).json({ job });
@@ -281,9 +281,10 @@ router.post("/:datasetId/analysis", async (req, res) => {
 // 最新任务状态：GET /:datasetId/analysis
 router.get("/:datasetId/analysis", async (req, res) => {
   try {
-    const job = await AnalysisJobModel.findOne({ datasetId: req.params.datasetId })
-      .sort({ createdAt: -1 })
-      .lean();
+    const job = await AnalysisJobModel.findOne({
+      where: { datasetId: req.params.datasetId },
+      order: [["createdAt", "DESC"]],
+    });
     res.json({ job: job ?? null });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -292,9 +293,9 @@ router.get("/:datasetId/analysis", async (req, res) => {
 
 // 暂停：worker 检测到 flag 后停止处理（单例运行，不重复启动）
 router.post("/:datasetId/analysis/pause", async (req, res) => {
-  const job = await AnalysisJobModel.findOne({ datasetId: req.params.datasetId, status: "running" });
+  const job = await AnalysisJobModel.findOne({ where: { datasetId: req.params.datasetId, status: "running" } });
   if (!job) return res.status(404).json({ error: "没有运行中的任务" });
-  pauseFlags.add(String(job._id));
+  pauseFlags.add(String(job.id));
   job.status = "paused";
   await job.save();
   res.json({ ok: true });
@@ -302,23 +303,25 @@ router.post("/:datasetId/analysis/pause", async (req, res) => {
 
 // 恢复：清 flag 让现有 worker 继续；若 worker 已退出（异常）则重启
 router.post("/:datasetId/analysis/resume", async (req, res) => {
-  const job = await AnalysisJobModel.findOne({ datasetId: req.params.datasetId, status: "paused" });
+  const job = await AnalysisJobModel.findOne({ where: { datasetId: req.params.datasetId, status: "paused" } });
   if (!job) return res.status(404).json({ error: "没有暂停的任务" });
-  pauseFlags.delete(String(job._id));
+  pauseFlags.delete(String(job.id));
   job.status = "running";
   await job.save();
-  if (!runningJobs.has(String(job._id))) {
-    void runJob(String(job._id));
+  if (!runningJobs.has(String(job.id))) {
+    void runJob(String(job.id));
   }
   res.json({ ok: true });
 });
 
 // 取消
 router.post("/:datasetId/analysis/cancel", async (req, res) => {
-  const job = await AnalysisJobModel.findOne({ datasetId: req.params.datasetId, status: { $in: ["running", "paused"] } });
+  const job = await AnalysisJobModel.findOne({
+    where: { datasetId: req.params.datasetId, status: { [Op.in]: ["running", "paused"] } },
+  });
   if (!job) return res.status(404).json({ error: "没有运行中的任务" });
-  cancelFlags.add(String(job._id));
-  pauseFlags.delete(String(job._id));
+  cancelFlags.add(String(job.id));
+  pauseFlags.delete(String(job.id));
   job.status = "failed";
   await job.save();
   res.json({ ok: true });
@@ -327,21 +330,20 @@ router.post("/:datasetId/analysis/cancel", async (req, res) => {
 // 一键清空分析结果：停止任务 + 删除任务记录 + 评论重置为未分析（可重新分析）
 router.post("/:datasetId/analysis/reset", async (req, res) => {
   try {
-    const jobs = await AnalysisJobModel.find({
-      datasetId: req.params.datasetId,
-      status: { $in: ["pending", "running", "paused"] },
-    }).lean();
+    const jobs = await AnalysisJobModel.findAll({
+      where: { datasetId: req.params.datasetId, status: { [Op.in]: ["pending", "running", "paused"] } },
+    });
     for (const j of jobs) {
-      cancelFlags.add(String(j._id));
-      pauseFlags.delete(String(j._id));
+      cancelFlags.add(String(j.id));
+      pauseFlags.delete(String(j.id));
     }
-    await AnalysisJobModel.deleteMany({ datasetId: req.params.datasetId });
-    const r = await CommentModel.updateMany(
-      { datasetId: req.params.datasetId },
-      { $set: { analyzed: false, sentiment: "neu", sentimentScore: 0, topics: [], keywords: [] } }
+    await AnalysisJobModel.destroy({ where: { datasetId: req.params.datasetId } });
+    const [affected] = await CommentModel.update(
+      { analyzed: false, sentiment: "neu", sentimentScore: 0, topics: [], keywords: [] },
+      { where: { datasetId: req.params.datasetId } }
     );
-    emit(req.params.datasetId, "analysis:reset", { count: r.modifiedCount });
-    res.json({ ok: true, reset: r.modifiedCount });
+    emit(req.params.datasetId, "analysis:reset", { count: affected });
+    res.json({ ok: true, reset: affected });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -349,13 +351,12 @@ router.post("/:datasetId/analysis/reset", async (req, res) => {
 
 /** 删除数据集时调用：取消该数据集下所有分析任务（防止旧 worker 继续写已删除数据） */
 export async function cancelJobsForDataset(datasetId: string) {
-  const jobs = await AnalysisJobModel.find({
-    datasetId,
-    status: { $in: ["pending", "running", "paused"] },
-  }).lean();
+  const jobs = await AnalysisJobModel.findAll({
+    where: { datasetId, status: { [Op.in]: ["pending", "running", "paused"] } },
+  });
   for (const j of jobs) {
-    cancelFlags.add(String(j._id));
-    pauseFlags.delete(String(j._id));
+    cancelFlags.add(String(j.id));
+    pauseFlags.delete(String(j.id));
   }
 }
 

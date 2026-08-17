@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { Types } from "mongoose";
+import { Op } from "sequelize";
 import { AlertModel, AlertRuleModel, CommentModel } from "../models.js";
 import { io } from "../index.js";
 import { detectAnomaly } from "../services/anomalyService.js";
@@ -21,14 +21,15 @@ function emit(datasetId: string, event: string, payload: unknown) {
  * cutoff：模拟器重放时只检测"已流入"的评论（timestamp <= cutoff），保证演示时序正确。
  */
 async function checkAlerts(datasetId: string, cutoff?: Date) {
-  const rules = await AlertRuleModel.find({ datasetId, enabled: true }).lean();
+  const rules = await AlertRuleModel.findAll({ where: { datasetId, enabled: true } });
   if (rules.length === 0) return;
 
-  const timeFilter = cutoff ? { $lte: cutoff } : undefined;
-  const recent = await CommentModel.find({ datasetId, ...(timeFilter ? { timestamp: timeFilter } : {}) })
-    .sort({ timestamp: -1 })
-    .limit(WINDOW)
-    .lean();
+  const timeFilter = cutoff ? { timestamp: { [Op.lte]: cutoff } } : {};
+  const recent = await CommentModel.findAll({
+    where: { datasetId, ...timeFilter },
+    order: [["timestamp", "DESC"]],
+    limit: WINDOW,
+  });
   if (recent.length < 5) return;
 
   const negRate = recent.filter((c) => c.sentiment === "neg").length / recent.length;
@@ -36,17 +37,18 @@ async function checkAlerts(datasetId: string, cutoff?: Date) {
   // Z-score：滑动窗口负面率序列（每 5 条采样）检测突增（只统计已流入的评论）
   let anomalyMsg: string | null = null;
   try {
-    const oid = new Types.ObjectId(datasetId);
-    const grouped = await CommentModel.aggregate([
-      { $match: { datasetId: oid, ...(timeFilter ? { timestamp: timeFilter } : {}) } },
-      { $sort: { timestamp: 1 } },
-      { $group: { _id: null, items: { $push: { s: "$sentiment" } } } },
-    ]);
-    const items = grouped[0]?.items ?? [];
+    if (!/^\d+$/.test(datasetId)) throw new Error("invalid dataset id");
+    const rows = await CommentModel.findAll({
+      where: { datasetId, ...timeFilter },
+      attributes: ["sentiment"],
+      order: [["timestamp", "ASC"]],
+      raw: true,
+    });
+    const items = rows.map((r) => r.sentiment);
     const seq: number[] = [];
     for (let i = 0; i < items.length; i += 1) {
       const slice = items.slice(Math.max(0, i - WINDOW), i + 1);
-      seq.push(slice.filter((x: { s: string }) => x.s === "neg").length / slice.length);
+      seq.push(slice.filter((s) => s === "neg").length / slice.length);
     }
     const sampled: number[] = [];
     for (let i = 0; i < seq.length; i += 5) sampled.push(Math.round(seq[i] * 100) / 100);
@@ -63,10 +65,8 @@ async function checkAlerts(datasetId: string, cutoff?: Date) {
   // 冷却检查：同一数据集 + 类型最近 60s 是否已触发
   const inCooldown = async (type: string) => {
     const recentAlert = await AlertModel.findOne({
-      datasetId,
-      type,
-      triggeredAt: { $gte: new Date(Date.now() - COOLDOWN_MS) },
-    }).lean();
+      where: { datasetId, type, triggeredAt: { [Op.gte]: new Date(Date.now() - COOLDOWN_MS) } },
+    });
     return !!recentAlert;
   };
 
@@ -113,7 +113,7 @@ async function checkAlerts(datasetId: string, cutoff?: Date) {
       value: t.value,
     });
     emit(datasetId, "alert:new", {
-      id: String(alert._id),
+      id: String(alert.id),
       datasetId,
       type: alert.type,
       severity: alert.severity,
@@ -128,13 +128,17 @@ async function checkAlerts(datasetId: string, cutoff?: Date) {
 async function tick(datasetId: string) {
   const sim = sims.get(datasetId);
   if (!sim) return;
-  const total = await CommentModel.countDocuments({ datasetId });
+  const total = await CommentModel.count({ where: { datasetId } });
   if (sims.get(datasetId) !== sim) return; // 期间被 stop/restart，丢弃旧链
   if (sim.index >= total) {
     stopSim(datasetId);
     return;
   }
-  const comment = await CommentModel.findOne({ datasetId }).sort({ timestamp: 1 }).skip(sim.index).lean();
+  const comment = await CommentModel.findOne({
+    where: { datasetId },
+    order: [["timestamp", "ASC"]],
+    offset: sim.index,
+  });
   if (sims.get(datasetId) !== sim) return;
   if (!comment) {
     stopSim(datasetId);
@@ -142,7 +146,7 @@ async function tick(datasetId: string) {
   }
   sim.index++;
   emit(datasetId, "comment:stream", {
-    id: String(comment._id),
+    id: String(comment.id),
     content: comment.content,
     author: comment.author,
     platform: comment.platform,
@@ -177,7 +181,7 @@ router.post("/:datasetId/simulate/start", async (req, res) => {
   const datasetId = req.params.datasetId;
   const rawSpeed = Number(req.body?.speed ?? 5);
   const speed = Number.isFinite(rawSpeed) ? Math.max(1, Math.min(20, rawSpeed)) : 5;
-  const count = await CommentModel.countDocuments({ datasetId });
+  const count = await CommentModel.count({ where: { datasetId } });
   if (!count) return res.status(400).json({ error: "数据集没有评论" });
   stopSim(datasetId);
   sims.set(datasetId, { timer: null, index: 0, speed });

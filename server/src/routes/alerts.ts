@@ -13,8 +13,8 @@ function isRuleType(t: unknown): t is (typeof RULE_TYPES)[number] {
 router.get("/rules", async (req, res) => {
   try {
     const filter = req.query.datasetId ? { datasetId: req.query.datasetId } : {};
-    const rules = await AlertRuleModel.find(filter).lean();
-    res.json({ rules: rules.map((r) => ({ id: r._id, datasetId: r.datasetId, type: r.type, threshold: r.threshold, keyword: r.keyword, enabled: r.enabled })) });
+    const rules = await AlertRuleModel.findAll({ where: filter });
+    res.json({ rules: rules.map((r) => ({ id: r.id, datasetId: r.datasetId, type: r.type, threshold: r.threshold, keyword: r.keyword, enabled: r.enabled })) });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -39,7 +39,7 @@ router.post("/rules", async (req, res) => {
       keyword: typeof keyword === "string" ? keyword : "",
       enabled: enabled === undefined ? true : enabled === true,
     });
-    res.status(201).json({ id: rule._id });
+    res.status(201).json({ id: rule.id });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -47,7 +47,7 @@ router.post("/rules", async (req, res) => {
 
 router.patch("/rules/:id", async (req, res) => {
   try {
-    const rule = await AlertRuleModel.findById(req.params.id);
+    const rule = await AlertRuleModel.findByPk(req.params.id);
     if (!rule) return res.status(404).json({ error: "规则不存在" });
     const { threshold, keyword, enabled, type } = req.body ?? {};
     if (threshold !== undefined) {
@@ -76,7 +76,7 @@ router.patch("/rules/:id", async (req, res) => {
 
 router.delete("/rules/:id", async (req, res) => {
   try {
-    await AlertRuleModel.findByIdAndDelete(req.params.id);
+    await AlertRuleModel.destroy({ where: { id: req.params.id } });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -91,10 +91,15 @@ router.get("/", async (req, res) => {
     const rawSkip = Number(req.query.skip ?? 0);
     const limit = Number.isFinite(rawLimit) ? Math.min(500, Math.max(1, Math.floor(rawLimit))) : 100;
     const skip = Number.isFinite(rawSkip) ? Math.max(0, Math.floor(rawSkip)) : 0;
-    const alerts = await AlertModel.find(filter).sort({ triggeredAt: -1 }).skip(skip).limit(limit).lean();
+    const alerts = await AlertModel.findAll({
+      where: filter,
+      order: [["triggeredAt", "DESC"]],
+      offset: skip,
+      limit,
+    });
     res.json({
       alerts: alerts.map((a) => ({
-        id: a._id,
+        id: a.id,
         datasetId: a.datasetId,
         type: a.type,
         severity: a.severity,
@@ -112,7 +117,7 @@ router.get("/", async (req, res) => {
 // 确认告警
 router.patch("/:id/ack", async (req, res) => {
   try {
-    await AlertModel.findByIdAndUpdate(req.params.id, { acknowledged: true });
+    await AlertModel.update({ acknowledged: true }, { where: { id: req.params.id } });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });

@@ -27,7 +27,7 @@ async function fetchFeed(datasetId: string): Promise<number> {
 }
 
 async function doFetchFeed(datasetId: string): Promise<number> {
-  const ds = await DatasetModel.findById(datasetId).lean();
+  const ds = await DatasetModel.findByPk(datasetId);
   if (!ds || !ds.feedUrl) return 0;
 
   // 兼容相对路径（如 /api/demo/feed）：补全为后端自身地址
@@ -63,13 +63,16 @@ async function doFetchFeed(datasetId: string): Promise<number> {
     for (const item of arr.slice(0, 200)) {
       const raw = item as Record<string, unknown>;
       const author = raw.author ? String(raw.author) : "匿名用户";
-      const dup = await CommentModel.exists({ datasetId, ...buildDedupFilter(raw, author) });
+      const dup = await CommentModel.findOne({
+        where: { datasetId, ...buildDedupFilter(raw, author) },
+        attributes: ["id"],
+      });
       if (dup) continue;
       const doc = normalizeComment(raw, { platform: ds.platform || "数据源", now, index: inserted });
       const comment = await CommentModel.create({ datasetId, ...doc });
       inserted++;
       emit(datasetId, "comment:stream", {
-        id: String(comment._id),
+        id: String(comment.id),
         content: comment.content,
         author: comment.author,
         platform: comment.platform,
@@ -80,12 +83,15 @@ async function doFetchFeed(datasetId: string): Promise<number> {
       });
     }
 
-    await DatasetModel.updateOne({ _id: datasetId }, { feedLastAt: new Date(), feedLastCount: inserted, feedLastError: "" });
+    await DatasetModel.update(
+      { feedLastAt: new Date(), feedLastCount: inserted, feedLastError: "" },
+      { where: { id: datasetId } }
+    );
     emit(datasetId, "feed:status", { running: true, lastAt: new Date(), count: inserted });
     return inserted;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    await DatasetModel.updateOne({ _id: datasetId }, { feedLastError: msg }).catch(() => {});
+    await DatasetModel.update({ feedLastError: msg }, { where: { id: datasetId } }).catch(() => {});
     throw new Error(msg);
   }
 }
@@ -93,10 +99,10 @@ async function doFetchFeed(datasetId: string): Promise<number> {
 /** 启动定时抓取（先抓一次，再按间隔循环） */
 export async function startFeed(datasetId: string) {
   stopFeed(datasetId);
-  const ds = await DatasetModel.findById(datasetId);
+  const ds = await DatasetModel.findByPk(datasetId);
   if (!ds || !ds.feedUrl) return;
   const intervalMs = Math.max(1, ds.feedIntervalMin || 5) * 60 * 1000;
-  await DatasetModel.updateOne({ _id: datasetId }, { feedRunning: true });
+  await DatasetModel.update({ feedRunning: true }, { where: { id: datasetId } });
   emit(String(datasetId), "feed:status", { running: true });
   const run = async () => {
     try {
@@ -114,7 +120,7 @@ export function stopFeed(datasetId: string) {
   const reg = feedTimers.get(datasetId);
   if (reg?.timer) clearInterval(reg.timer);
   feedTimers.delete(datasetId);
-  void DatasetModel.updateOne({ _id: datasetId }, { feedRunning: false }).catch(() => {});
+  void DatasetModel.update({ feedRunning: false }, { where: { id: datasetId } }).catch(() => {});
 }
 
 // 创建 feed 数据集：POST /api/datasets 已支持（feedUrl + feedIntervalMin）由 datasets 路由处理；
@@ -122,10 +128,10 @@ export function stopFeed(datasetId: string) {
 
 // 启动：POST /:id/feed/start
 router.post("/:datasetId/feed/start", async (req, res) => {
-  const ds = await DatasetModel.findById(req.params.datasetId);
+  const ds = await DatasetModel.findByPk(req.params.datasetId);
   if (!ds) return res.status(404).json({ error: "数据集不存在" });
   if (!ds.feedUrl) return res.status(400).json({ error: "该数据集未配置数据源 URL" });
-  await startFeed(String(ds._id));
+  await startFeed(ds.id);
   res.json({ ok: true });
 });
 
