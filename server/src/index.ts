@@ -2,11 +2,20 @@ import express from "express";
 import cors from "cors";
 import { createServer } from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import { Op } from "sequelize";
 import { initDb, sequelize, dbUriSummary } from "./db.js";
 import { HttpError } from "./utils/httpUtils.js";
+import {
+  PORT,
+  CORS_ORIGINS,
+  RATE_LIMIT_PER_MIN,
+  ENABLE_MOCK_AI,
+  WEB_DIST,
+  authRequired as ACCESS_REQUIRED,
+  assertProductionConfig,
+} from "./config.js";
+import { requireAccessToken, socketAuthGuard } from "./utils/auth.js";
 import datasetsRouter from "./routes/datasets.js";
 import commentsRouter from "./routes/comments.js";
 import alertsRouter from "./routes/alerts.js";
@@ -16,27 +25,27 @@ import feedsRouter, { demoFeedHandler, startFeed } from "./routes/feeds.js";
 import { DatasetModel } from "./models.js";
 import { listScenarios } from "./services/scenarioService.js";
 
-const PORT = Number(process.env.PORT ?? 5176);
-// CORS 白名单：逗号分隔；默认允许本地 dev 前后端
-const CORS_ORIGINS = (process.env.CORS_ORIGIN ?? "http://localhost:5175,http://localhost:5176")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-// 写接口简单限流：次/分钟/IP（0 关闭）
-const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_PER_MIN ?? 0);
-// 测试用 Mock AI 开关（生产建议关闭：ENABLE_MOCK_AI=false）
-const ENABLE_MOCK_AI = process.env.ENABLE_MOCK_AI !== "false";
-// 静态托管前端构建产物（web/dist）；WEB_DIST 可覆盖路径
-const WEB_DIST =
-  process.env.WEB_DIST ?? fileURLToPath(new URL("../../web/dist", import.meta.url));
+// 生产强校验：密钥/CORS/限流/Mock AI/访问口令未配置则拒绝启动（开发模式跳过）
+assertProductionConfig();
+// 访问口令已启用？（未设 ACCESS_TOKEN 即开发模式，不启用认证）
+const accessRequired = ACCESS_REQUIRED;
+if (accessRequired) {
+  console.log("[config] 访问口令认证已启用：所有 /api 与 socket.io 连接需携带 Bearer token");
+}
 
 if (!process.env.MYSQL_HOST && !process.env.MYSQL_USER && !process.env.MYSQL_PASSWORD) {
   console.warn("[config] 未设置 MYSQL_* 环境变量，使用默认本地 MySQL（root:1234@127.0.0.1:3306/plfx）。生产环境请通过环境变量配置！");
+}
+if (!accessRequired) {
+  console.warn("[config] 未设置 ACCESS_TOKEN，认证未启用（开发模式）。公网部署必须设置访问口令！");
 }
 if (RATE_LIMIT_PER_MIN > 0) {
   console.log(`[config] 写接口限流已开启：${RATE_LIMIT_PER_MIN} 次/分钟/IP`);
 } else {
   console.warn("[config] 写接口限流未开启（RATE_LIMIT_PER_MIN=0）。公网部署建议设置，如 60。");
+}
+if (ENABLE_MOCK_AI) {
+  console.warn("[config] Mock AI 端点已开启（仅测试用，生产请保持关闭）");
 }
 
 // 进程级兜底：异步异常/未捕获异常只记日志，不崩进程
@@ -50,6 +59,21 @@ process.on("uncaughtException", (err) => {
 const app = express();
 app.use(cors({ origin: CORS_ORIGINS }));
 app.use(express.json({ limit: "10mb" }));
+
+// 健康检查（公开）：容器编排 / 负载均衡探活用；DB 不可用返回 503
+app.get("/healthz", async (_req, res) => {
+  try {
+    await sequelize.authenticate();
+    res.json({ ok: true, db: "up" });
+  } catch {
+    res.status(503).json({ ok: false, db: "down" });
+  }
+});
+
+// 认证状态探测（公开）：前端据此决定是否展示访问口令输入
+app.get("/api/auth/status", (_req, res) => {
+  res.json({ authRequired: accessRequired });
+});
 
 // 轻量请求日志（含耗时；生产可换 morgan）
 app.use((req, res, next) => {
@@ -84,6 +108,8 @@ const httpServer = createServer(app);
 export const io = new Server(httpServer, {
   cors: { origin: CORS_ORIGINS, methods: ["GET", "POST"] },
 });
+// 访问口令认证：握手时校验 auth.token，失败拒绝连接
+io.use(socketAuthGuard);
 io.on("connection", (socket) => {
   console.log("[socket] connected", socket.id);
   socket.on("join-dataset", async (datasetId: string) => {
@@ -100,6 +126,9 @@ io.on("connection", (socket) => {
     socket.leave(`dataset:${datasetId}`);
   });
 });
+
+// 访问口令认证：ACCESS_TOKEN 已设置时，所有 /api/* 必须携带 Bearer token（/api/auth/status 除外，已在上面注册）
+app.use("/api", requireAccessToken);
 
 app.use("/api/datasets", datasetsRouter);
 app.use("/api/datasets", commentsRouter);

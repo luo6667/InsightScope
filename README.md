@@ -20,12 +20,13 @@
 - **实时**：模拟器重放评论流入（流入动画）、告警实时弹出（socket 推送）
 - **告警**：规则配置（负面率阈值 / 评论量 / 敏感关键词）+ Z-score 负面率异常检测 + 60s 冷却 + 告警确认流转
 - **报告**：AI 舆情周报（流式生成，五段式结构），导出 Markdown
-- **安全**：API key 只存浏览器，分析任务随请求传本地后端（仅内存、不落库）；key 含非 ASCII 自动拦截提示
+- **安全**：API key 只存浏览器，分析任务随请求传本地后端（仅内存、不落库）；key 含非 ASCII 自动拦截提示；可选 `ACCESS_TOKEN` 访问口令（全部 `/api` 与 socket 连接鉴权）；生产启动强校验（密钥/CORS/限流/Mock AI/口令缺一拒绝启动）
 
 ## 快速开始
 
 ```powershell
 # 依赖：Node 18+、本机 MySQL（默认 root/1234@127.0.0.1:3306，库名 plfx，启动时自动建库建表）
+# 开发模式默认不启用访问口令；如需联调认证，先 $env:ACCESS_TOKEN = "测试口令"
 
 # 1. 后端（http://localhost:5176）
 cd insight/server
@@ -53,29 +54,45 @@ npm run build
 cd insight/server
 npm run build        # tsc 编译到 dist/
 
-# 3. 启动（生产模式）
+# 3. 启动（生产模式）—— NODE_ENV=production 时启动前强校验，以下配置缺失/不合法会直接拒绝启动
 $env:NODE_ENV = "production"
 $env:MYSQL_HOST = "127.0.0.1"
 $env:MYSQL_USER = "root"
-$env:MYSQL_PASSWORD = "1234"
+$env:MYSQL_PASSWORD = "改成强密码"
 $env:MYSQL_DATABASE = "plfx"
+$env:CORS_ORIGIN = "https://你的域名"
+$env:RATE_LIMIT_PER_MIN = "60"
+$env:ENABLE_MOCK_AI = "false"
+$env:ACCESS_TOKEN = "改成一串强口令"   # 所有 /api 与 socket.io 连接的访问口令
 npm start            # node dist/index.js，访问 http://服务器IP:5176 即前端页面
 ```
+
+> 生产强校验内容：`MYSQL_PASSWORD`（禁止默认 1234）、`CORS_ORIGIN`、`RATE_LIMIT_PER_MIN > 0`、`ENABLE_MOCK_AI=false`、`ACCESS_TOKEN` 五项必须显式配置，缺任意一项进程拒绝启动并列出原因。
 
 ### 关键环境变量（详见 server/.env.example）
 
 | 变量 | 说明 | 生产建议 |
 |---|---|---|
-| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | MySQL 连接（默认 root/1234@127.0.0.1:3306/plfx） | **必填**，勿用默认密码 |
-| `CORS_ORIGIN` | 允许的跨域域名（逗号分隔） | 填实际访问域名，勿留默认 |
-| `RATE_LIMIT_PER_MIN` | 写接口限流（次/分钟/IP，0=关） | 建议 60 |
-| `ENABLE_MOCK_AI` | 测试用 Mock AI 开关 | 建议 `false` |
-| `NODE_ENV` | 运行环境 | `production`（错误响应不泄露内部细节） |
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | MySQL 连接（默认 root/1234@127.0.0.1:3306/plfx） | **必填**，勿用默认密码（强校验拒绝 1234） |
+| `ACCESS_TOKEN` | **访问口令**（Bearer token）：设置后所有 `/api/*` 与 socket.io 连接必须携带，否则 401 / 拒绝握手；未设置 = 开发模式不启用认证 | **必填**（生产强校验），建议 16+ 位随机串 |
+| `CORS_ORIGIN` | 允许的跨域域名（逗号分隔） | 填实际访问域名，勿留默认（生产强校验强制） |
+| `RATE_LIMIT_PER_MIN` | 写接口限流（次/分钟/IP，0=关） | 建议 60（生产强校验强制 >0） |
+| `ENABLE_MOCK_AI` | 测试用 Mock AI 开关（**默认关闭**，仅显式 `true` 才开） | 保持关闭（生产强校验强制 false） |
+| `NODE_ENV` | 运行环境 | `production`（错误响应不泄露内部细节 + 启动强校验） |
 | `VITE_API_BASE` / `VITE_SOCKET_URL` | （前端）API / socket 地址覆盖 | 前后端同域部署无需设置 |
+
+### 访问口令（认证）
+
+- 后端设置 `ACCESS_TOKEN` 后：所有 `/api/*` 接口要求 `Authorization: Bearer <口令>`，socket.io 握手要求 `auth.token`，缺失/错误分别返回 401 与拒绝连接。校验使用常数时间比较；口令尝试失败过多（同一 IP 10 次/分钟）会临时锁定。
+- 前端首次进入会弹出口令输入层（探测 `GET /api/auth/status`），输入正确后口令存本浏览器 localStorage，所有请求与 socket 自动携带；后续口令失效会重新弹出。
+- 适用于单机 / 团队内部部署的轻量防护，未做多用户 / 角色权限；如需公开多租户使用，请在此基础上接入正式认证体系。
+- 公网部署必须同时启用 HTTPS，避免口令经明文传输被窃听。
+- **取舍说明**：口令存于浏览器 localStorage，若站点存在 XSS 可被读取——作为共享门禁口令（非用户级凭据）风险可控，但请保持 `ACCESS_TOKEN` 为 ≥16 位随机串（生产强校验强制），并对前端依赖保持更新。
+- 健康检查：`GET /healthz`（公开，无需口令）返回 `{ ok, db }`，DB 不可用时 503，供负载均衡 / 容器编排探活。
 
 ### 其他部署方式
 
-- **nginx 反代**：把 `/` 指向前端静态文件，`/api` 与 `/socket.io`（需配 `proxy_http_version 1.1` + `Upgrade` 头）指向后端端口。
+- **nginx 反代**：把 `/` 指向前端静态文件，`/api` 与 `/socket.io`（需配 `proxy_http_version 1.1` + `Upgrade` 头）指向后端端口；`/healthz` 同样转发到后端（或让 nginx 直接返回 200）。
 - **进程守护**：生产用 PM2（`pm2 start dist/index.js`）或 Docker 运行后端，保证开机自启与崩溃重启。
 - **HTTPS**：AI key 经 HTTP 明文传输，公网必须走 TLS（nginx 配证书或托管平台自带）。
 - **前端独立部署**：前后端不同域时，构建时设置 `VITE_API_BASE` 与 `VITE_SOCKET_URL` 指向后端地址。
@@ -115,6 +132,9 @@ insight/
 ```powershell
 cd insight/web
 node scripts/sim-test.mjs   # 实时监控链路：socket 评论流 + 告警触发 + 冷却
+node scripts/e2e-test.mjs   # 全链路 e2e：REST + socket（需先启动后端）
+# 后端启用访问口令时（ACCESS_TOKEN 已设置），测试脚本自动读取同名的本机环境变量携带口令：
+# $env:ACCESS_TOKEN = "..." 后运行即可
 ```
 
 ## 简历写法（示例）

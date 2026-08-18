@@ -3,6 +3,10 @@
 import { io } from "socket.io-client";
 
 const base = "http://localhost:5176";
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN ?? "";
+// 后端启用访问口令时（ACCESS_TOKEN 已设置），所有请求与 socket 连接需携带
+const authHeaders = ACCESS_TOKEN ? { Authorization: `Bearer ${ACCESS_TOKEN}` } : {};
+
 const results = [];
 let failCount = 0;
 
@@ -14,7 +18,7 @@ function check(name, ok, extra = "") {
 
 async function api(path, opts) {
   const res = await fetch(base + path, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders },
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
@@ -75,7 +79,7 @@ const rulesList2 = await api(`/api/alerts/rules?dataset=${dsId}`);
 check("删除后 >= 2", rulesList2.data.rules?.length >= 2, `count=${rulesList2.data.rules?.length}`);
 
 // 7. socket 实时模拟 + 告警触发
-const socket = io(base, { transports: ["websocket"] });
+const socket = io(base, { transports: ["websocket"], auth: { token: ACCESS_TOKEN } });
 await new Promise((r) => socket.on("connect", r));
 socket.emit("join-dataset", dsId);
 let comments = 0;

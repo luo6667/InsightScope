@@ -3,10 +3,13 @@
 import { io } from "socket.io-client";
 
 const base = "http://localhost:5176";
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN ?? "";
+// 后端启用访问口令时需携带
+const authHeaders = ACCESS_TOKEN ? { Authorization: `Bearer ${ACCESS_TOKEN}` } : {};
 
 async function api(path, opts) {
   const res = await fetch(base + path, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders },
     ...opts,
   });
   return res.json();
@@ -36,7 +39,7 @@ await api("/api/alerts/rules", {
 });
 console.log("rule added: negativity >= 40%");
 
-const socket = io(base, { transports: ["websocket"] });
+const socket = io(base, { transports: ["websocket"], auth: { token: ACCESS_TOKEN } });
 await new Promise((r) => socket.on("connect", r));
 socket.emit("join-dataset", negDs.id);
 

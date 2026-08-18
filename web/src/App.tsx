@@ -3,6 +3,7 @@ import { lazy, Suspense } from "react";
 import { Bell, BrainCircuit, Database, FileText, Gauge, Loader2, Moon, Radar, Settings, Sun, Upload } from "lucide-react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useTheme } from "./hooks/useTheme";
+import AccessGate from "./components/AccessGate";
 
 // 路由级懒加载：按需加载页面，减小首屏 bundle
 const DatasetsPage = lazy(() => import("./pages/DatasetsPage"));
@@ -71,6 +72,7 @@ export default function App() {
   const { theme, toggleTheme } = useTheme();
 
   return (
+    <AccessGate>
     <div className="min-h-[100dvh]">
       {/* 桌面悬浮岛（lg 以上） */}
       <nav className="island-glass fixed left-6 top-1/2 z-50 hidden w-56 -translate-y-1/2 rounded-3xl py-5 lg:block">
@@ -177,6 +179,7 @@ export default function App() {
         </AnimatePresence>
         </Suspense>
       </main>
-    </div>
+      </div>
+    </AccessGate>
   );
 }
